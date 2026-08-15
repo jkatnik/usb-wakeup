@@ -1,0 +1,8 @@
+{
+    "uuid": "usb-wakeup@jkatnik",
+    "name": "USB Wake-up",
+    "description": "Listuje urządzenia USB i pozwala wybrać, które z nich mogą wybudzać komputer z uśpienia",
+    "icon": "drive-removable-media",
+    "version": "1.0",
+    "max-instances": 1
+}

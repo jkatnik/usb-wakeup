@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""Listuje urzadzenia USB i pozwala skonfigurowac, ktore z nich moga
+wybudzac komputer z uspienia. Uzycie:
+
+    usb-wakeup                 - otwiera okno GUI
+    usb-wakeup gui             - jw.
+    usb-wakeup list            - wypisuje urzadzenia w terminalu
+    usb-wakeup enable <id>     - wlacza wybudzanie dla urzadzenia (np. 3-1.2.1)
+    usb-wakeup disable <id>    - wylacza wybudzanie dla urzadzenia
+"""
+
+import os
+import subprocess
+import sys
+
+HELPER_SCRIPT = "/usr/local/bin/usb-wakeup-helper.sh"
+SYSFS_USB_ROOT = "/sys/bus/usb/devices"
+
+
+def read_file(path):
+    try:
+        with open(path, "r") as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def list_devices():
+    devices = []
+    try:
+        entries = sorted(os.listdir(SYSFS_USB_ROOT))
+    except OSError as e:
+        print(f"Nie mozna odczytac {SYSFS_USB_ROOT}: {e}", file=sys.stderr)
+        return devices
+
+    for name in entries:
+        dev_path = os.path.join(SYSFS_USB_ROOT, name)
+        wakeup_path = os.path.join(dev_path, "power", "wakeup")
+        if not os.path.isfile(wakeup_path):
+            continue
+
+        wakeup = read_file(wakeup_path)
+        if wakeup is None:
+            continue
+
+        manufacturer = read_file(os.path.join(dev_path, "manufacturer")) or ""
+        product = read_file(os.path.join(dev_path, "product")) or ""
+        vendor_id = read_file(os.path.join(dev_path, "idVendor")) or ""
+        product_id = read_file(os.path.join(dev_path, "idProduct")) or ""
+
+        label_parts = [p for p in (manufacturer, product) if p]
+        label = " ".join(label_parts) if label_parts else f"USB {vendor_id}:{product_id}"
+
+        devices.append({
+            "id": name,
+            "label": label,
+            "enabled": wakeup == "enabled",
+        })
+
+    devices.sort(key=lambda d: d["label"].lower())
+    return devices
+
+
+def set_wakeup(device_id, enable):
+    action = "enabled" if enable else "disabled"
+    result = subprocess.run(
+        ["pkexec", HELPER_SCRIPT, device_id, action],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0, result.stderr.strip()
+
+
+def run_cli_list():
+    devices = list_devices()
+    if not devices:
+        print("Nie znaleziono urzadzen USB obslugujacych wybudzanie.")
+        return 0
+
+    width = max(len(d["label"]) for d in devices)
+    for d in devices:
+        status = "wlaczone " if d["enabled"] else "wylaczone"
+        print(f"{d['id']:<12} {status}  {d['label']:<{width}}")
+    return 0
+
+
+def run_cli_set(device_id, enable):
+    ok, err = set_wakeup(device_id, enable)
+    if ok:
+        state = "wlaczone" if enable else "wylaczone"
+        print(f"Wybudzanie dla {device_id}: {state}")
+        return 0
+    else:
+        print(f"Blad: {err}", file=sys.stderr)
+        return 1
+
+
+def run_gui():
+    import gi
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import Gtk, GLib
+
+    class UsbWakeupWindow(Gtk.Window):
+        def __init__(self):
+            super().__init__(title="USB Wake-up")
+            self.set_default_size(420, 320)
+            self.set_border_width(10)
+            self.set_icon_name("drive-removable-media")
+
+            vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            self.add(vbox)
+
+            header = Gtk.Label(label="Urzadzenia USB - wybudzanie komputera")
+            header.set_xalign(0)
+            vbox.pack_start(header, False, False, 0)
+
+            scroller = Gtk.ScrolledWindow()
+            scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            vbox.pack_start(scroller, True, True, 0)
+
+            self.listbox = Gtk.ListBox()
+            self.listbox.set_selection_mode(Gtk.SelectionMode.NONE)
+            scroller.add(self.listbox)
+
+            button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            vbox.pack_start(button_box, False, False, 0)
+
+            refresh_btn = Gtk.Button(label="Odswiez")
+            refresh_btn.connect("clicked", lambda b: self.reload())
+            button_box.pack_start(refresh_btn, False, False, 0)
+
+            close_btn = Gtk.Button(label="Zamknij")
+            close_btn.connect("clicked", lambda b: self.close())
+            button_box.pack_end(close_btn, False, False, 0)
+
+            self.reload()
+
+        def reload(self):
+            for child in self.listbox.get_children():
+                self.listbox.remove(child)
+
+            devices = list_devices()
+
+            if not devices:
+                row = Gtk.ListBoxRow()
+                row.set_selectable(False)
+                label = Gtk.Label(label="Nie znaleziono urzadzen USB obslugujacych wybudzanie")
+                label.set_xalign(0)
+                label.set_margin_top(6)
+                label.set_margin_bottom(6)
+                label.set_margin_start(6)
+                row.add(label)
+                self.listbox.add(row)
+            else:
+                for dev in devices:
+                    self.listbox.add(self._make_row(dev))
+
+            self.listbox.show_all()
+
+        def _make_row(self, dev):
+            row = Gtk.ListBoxRow()
+            row.set_selectable(False)
+            hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            hbox.set_margin_top(4)
+            hbox.set_margin_bottom(4)
+            hbox.set_margin_start(6)
+            hbox.set_margin_end(6)
+            row.add(hbox)
+
+            label = Gtk.Label(label=f"{dev['label']} ({dev['id']})")
+            label.set_xalign(0)
+            hbox.pack_start(label, True, True, 0)
+
+            switch = Gtk.Switch()
+            switch.set_active(dev["enabled"])
+            switch.set_valign(Gtk.Align.CENTER)
+            switch.connect("state-set", self._on_switch_toggled, dev["id"])
+            hbox.pack_end(switch, False, False, 0)
+
+            return row
+
+        def _on_switch_toggled(self, switch, state, device_id):
+            switch.set_sensitive(False)
+            GLib.idle_add(self._do_set_and_reenable, switch, device_id, state)
+            return True
+
+        def _do_set_and_reenable(self, switch, device_id, state):
+            ok, err = set_wakeup(device_id, state)
+            switch.set_sensitive(True)
+            if not ok:
+                switch.set_state(not state)
+                switch.set_active(not state)
+                dialog = Gtk.MessageDialog(
+                    transient_for=self,
+                    modal=True,
+                    message_type=Gtk.MessageType.ERROR,
+                    buttons=Gtk.ButtonsType.OK,
+                    text=f"Nie udalo sie zmienic ustawienia dla {device_id}",
+                )
+                dialog.format_secondary_text(err or "")
+                dialog.run()
+                dialog.destroy()
+            return False
+
+    win = UsbWakeupWindow()
+    win.connect("destroy", Gtk.main_quit)
+    win.show_all()
+    Gtk.main()
+    return 0
+
+
+def main(argv):
+    if not argv or argv[0] == "gui":
+        return run_gui()
+
+    if argv[0] == "list":
+        return run_cli_list()
+
+    if argv[0] in ("enable", "disable"):
+        if len(argv) < 2:
+            print(f"Uzycie: usb-wakeup {argv[0]} <device-id>", file=sys.stderr)
+            return 1
+        return run_cli_set(argv[1], argv[0] == "enable")
+
+    if argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+
+    print(f"Nieznane polecenie: {argv[0]}", file=sys.stderr)
+    print(__doc__)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
