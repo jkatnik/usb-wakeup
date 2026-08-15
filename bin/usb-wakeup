@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import curses
+import json
 import locale
 import os
 import subprocess
@@ -7,6 +8,10 @@ import sys
 
 HELPER_SCRIPT = "/usr/local/bin/usb-wakeup-helper.sh"
 SYSFS_USB_ROOT = "/sys/bus/usb/devices"
+LABELS_FILE = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
+    "usb-wakeup", "labels.json",
+)
 
 STRINGS = {
     "pl": {
@@ -36,6 +41,7 @@ STRINGS = {
         "gui_refresh": "Odswiez",
         "gui_close": "Zamknij",
         "gui_error_title": "Nie udalo sie zmienic ustawienia dla: {device}",
+        "gui_rename_tooltip": "Zmien nazwe (Enter - zapisz, Esc - anuluj)",
     },
     "en": {
         "help": (
@@ -64,6 +70,7 @@ STRINGS = {
         "gui_refresh": "Refresh",
         "gui_close": "Close",
         "gui_error_title": "Could not change the setting for: {device}",
+        "gui_rename_tooltip": "Rename (Enter to save, Esc to cancel)",
     },
 }
 
@@ -95,6 +102,32 @@ def read_file(path):
         return None
 
 
+def load_label_overrides():
+    try:
+        with open(LABELS_FILE, "r") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_label_overrides(overrides):
+    os.makedirs(os.path.dirname(LABELS_FILE), exist_ok=True)
+    tmp = LABELS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(overrides, f, indent=2, sort_keys=True)
+    os.replace(tmp, LABELS_FILE)
+
+
+def set_label_override(key, custom_label):
+    overrides = load_label_overrides()
+    if custom_label:
+        overrides[key] = custom_label
+    else:
+        overrides.pop(key, None)
+    save_label_overrides(overrides)
+
+
 def list_devices():
     devices = []
     try:
@@ -102,6 +135,8 @@ def list_devices():
     except OSError as e:
         print(T["cannot_read"].format(path=SYSFS_USB_ROOT, err=e), file=sys.stderr)
         return devices
+
+    overrides = load_label_overrides()
 
     for name in entries:
         dev_path = os.path.join(SYSFS_USB_ROOT, name)
@@ -119,11 +154,16 @@ def list_devices():
         product_id = read_file(os.path.join(dev_path, "idProduct")) or ""
 
         label_parts = [p for p in (manufacturer, product) if p]
-        label = " ".join(label_parts) if label_parts else f"USB {vendor_id}:{product_id}"
+        default_label = " ".join(label_parts) if label_parts else f"USB {vendor_id}:{product_id}"
+
+        key = f"{vendor_id}:{product_id}" if vendor_id and product_id else f"id:{name}"
+        label = overrides.get(key) or default_label
 
         devices.append({
             "id": name,
+            "key": key,
             "label": label,
+            "default_label": default_label,
             "enabled": wakeup == "enabled",
         })
 
@@ -246,7 +286,7 @@ def _text_menu_loop(stdscr):
 def run_gui():
     import gi
     gi.require_version("Gtk", "3.0")
-    from gi.repository import Gtk, GLib
+    from gi.repository import Gtk, GLib, Gdk
 
     class UsbWakeupWindow(Gtk.Window):
         def __init__(self):
@@ -320,6 +360,13 @@ def run_gui():
             label.set_xalign(0)
             hbox.pack_start(label, True, True, 0)
 
+            rename_btn = Gtk.Button()
+            rename_btn.set_relief(Gtk.ReliefStyle.NONE)
+            rename_btn.set_image(Gtk.Image.new_from_icon_name("document-edit-symbolic", Gtk.IconSize.BUTTON))
+            rename_btn.set_tooltip_text(T["gui_rename_tooltip"])
+            rename_btn.connect("clicked", self._start_inline_edit, hbox, label, dev)
+            hbox.pack_end(rename_btn, False, False, 0)
+
             switch = Gtk.Switch()
             switch.set_active(dev["enabled"])
             switch.set_valign(Gtk.Align.CENTER)
@@ -327,6 +374,47 @@ def run_gui():
             hbox.pack_end(switch, False, False, 0)
 
             return row
+
+        def _start_inline_edit(self, button, hbox, label, dev):
+            entry = Gtk.Entry()
+            entry.set_text(dev["label"])
+            hbox.remove(label)
+            hbox.pack_start(entry, True, True, 0)
+            hbox.reorder_child(entry, 0)
+            button.set_sensitive(False)
+            entry.show()
+            entry.grab_focus()
+            entry.set_position(-1)
+            entry.select_region(0, -1)
+
+            state = {"done": False}
+
+            def finish(save):
+                if state["done"]:
+                    return
+                state["done"] = True
+                if save:
+                    new_label = entry.get_text().strip()
+                    if new_label and new_label != dev["default_label"]:
+                        set_label_override(dev["key"], new_label)
+                    else:
+                        set_label_override(dev["key"], None)
+                GLib.idle_add(self.reload)
+
+            def on_focus_out(widget, event):
+                finish(True)
+                return False
+
+            entry.connect("activate", lambda w: finish(True))
+            entry.connect("focus-out-event", on_focus_out)
+
+            def on_key_press(widget, event):
+                if event.keyval == Gdk.KEY_Escape:
+                    finish(False)
+                    return True
+                return False
+
+            entry.connect("key-press-event", on_key_press)
 
         def _on_switch_toggled(self, switch, state, dev):
             switch.set_sensitive(False)
