@@ -2,9 +2,11 @@
 Type=Application
 Version=1.0
 Name=USB Wake-up
-Comment=Konfiguracja wybudzania komputera z uspienia przez urzadzenia USB
+Comment=Configure which USB devices can wake the computer from sleep
+Comment[pl]=Konfiguracja wybudzania komputera z uspienia przez urzadzenia USB
 Exec=/usr/local/bin/usb-wakeup gui
 Icon=drive-removable-media
 Terminal=false
-Categories=Settings;System;
-Keywords=USB;wakeup;wybudzanie;power;
+Categories=Settings;HardwareSettings;
+Keywords=USB;wakeup;power;sleep;suspend;
+Keywords[pl]=USB;wybudzanie;wybudz;zasilanie;uspienie;

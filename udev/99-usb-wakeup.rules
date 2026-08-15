@@ -1,0 +1,4 @@
+# Restores the saved wake-up setting (power/wakeup) for USB devices on
+# every connect, and at boot (coldplug).
+# Installed by install.sh from the "usb-wakeup" Cinnamon applet.
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="?*", ATTR{idProduct}=="?*", RUN+="/usr/local/bin/usb-wakeup-apply.sh %p"

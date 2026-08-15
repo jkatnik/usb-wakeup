@@ -8,6 +8,37 @@ const ByteArray = imports.byteArray;
 const HELPER_SCRIPT = "/usr/local/bin/usb-wakeup-helper.sh";
 const SYSFS_USB_ROOT = "/sys/bus/usb/devices";
 
+const STRINGS = {
+    pl: {
+        tooltip: "Wybudzanie z USB",
+        title: "Urzadzenia mogace wybudzic komputer",
+        noDevices: "Brak urzadzen USB obslugujacych wybudzanie",
+        refresh: "Odswiez liste",
+        notifyTitle: "Wybudzanie USB",
+        notifyHelperFail: "Nie udalo sie uzyskac uprawnien administratora",
+        notifySetFail: label => "Nie udalo sie zmienic ustawienia dla: " + label,
+    },
+    en: {
+        tooltip: "USB wake-up",
+        title: "Devices allowed to wake the computer",
+        noDevices: "No USB devices supporting wake-up were found",
+        refresh: "Refresh list",
+        notifyTitle: "USB wake-up",
+        notifyHelperFail: "Could not get administrator permission",
+        notifySetFail: label => "Could not change the setting for: " + label,
+    },
+};
+
+function _detectLang() {
+    let names = GLib.get_language_names();
+    for (let name of names) {
+        if (name.startsWith('pl')) return 'pl';
+    }
+    return 'en';
+}
+
+const S = STRINGS[_detectLang()];
+
 class UsbWakeupApplet extends Applet.IconApplet {
 
     constructor(metadata, orientation, panel_height, instance_id) {
@@ -16,7 +47,7 @@ class UsbWakeupApplet extends Applet.IconApplet {
         this.metadata = metadata;
 
         this.set_applet_icon_symbolic_name("drive-removable-media");
-        this.set_applet_tooltip("Wybudzanie z USB");
+        this.set_applet_tooltip(S.tooltip);
 
         this.menuManager = new PopupMenu.PopupMenuManager(this);
         this.menu = new PopupMenu.PopupMenu(this.actor, orientation);
@@ -24,7 +55,7 @@ class UsbWakeupApplet extends Applet.IconApplet {
         Main.uiGroup.add_actor(this.menu.actor);
         this.menu.actor.hide();
 
-        let title = new PopupMenu.PopupMenuItem("Urzadzenia USB - wybudzanie komputera", { reactive: false });
+        let title = new PopupMenu.PopupMenuItem(S.title, { reactive: false });
         this.menu.addMenuItem(title);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
@@ -33,7 +64,7 @@ class UsbWakeupApplet extends Applet.IconApplet {
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        let refreshItem = new PopupMenu.PopupMenuItem("Odswiez liste");
+        let refreshItem = new PopupMenu.PopupMenuItem(S.refresh);
         refreshItem.connect('activate', () => {
             GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
                 this._updateDeviceSection();
@@ -74,7 +105,7 @@ class UsbWakeupApplet extends Applet.IconApplet {
         try {
             enumerator = baseDir.enumerate_children('standard::name', Gio.FileQueryInfoFlags.NONE, null);
         } catch (e) {
-            global.logError("usb-wakeup: nie mozna odczytac " + SYSFS_USB_ROOT + ": " + e);
+            global.logError("usb-wakeup: cannot read " + SYSFS_USB_ROOT + ": " + e);
             return devices;
         }
 
@@ -121,19 +152,19 @@ class UsbWakeupApplet extends Applet.IconApplet {
 
         if (devices.length === 0) {
             this.deviceSection.addMenuItem(new PopupMenu.PopupMenuItem(
-                "Nie znaleziono urzadzen USB obslugujacych wybudzanie", { reactive: false }));
+                S.noDevices, { reactive: false }));
         } else {
             for (let dev of devices) {
                 let item = new PopupMenu.PopupSwitchMenuItem(dev.label, dev.enabled);
                 item.connect('toggled', (menuItem, state) => {
-                    this._setWakeup(dev.id, state, menuItem);
+                    this._setWakeup(dev.id, dev.label, state, menuItem);
                 });
                 this.deviceSection.addMenuItem(item);
             }
         }
     }
 
-    _setWakeup(deviceId, enable, menuItem) {
+    _setWakeup(deviceId, deviceLabel, enable, menuItem) {
         let action = enable ? 'enabled' : 'disabled';
 
         let proc;
@@ -144,9 +175,9 @@ class UsbWakeupApplet extends Applet.IconApplet {
             });
             proc.init(null);
         } catch (e) {
-            global.logError("usb-wakeup: nie udalo sie uruchomic helpera: " + e);
+            global.logError("usb-wakeup: failed to launch the helper: " + e);
             menuItem.setToggleState(!enable);
-            Main.notify("Wybudzanie USB", "Nie udalo sie uruchomic helpera uprawnien");
+            Main.notify(S.notifyTitle, S.notifyHelperFail);
             return;
         }
 
@@ -160,9 +191,9 @@ class UsbWakeupApplet extends Applet.IconApplet {
             }
 
             if (!source.get_successful()) {
-                global.logError("usb-wakeup: helper zwrocil blad dla " + deviceId + ": " + stderr);
+                global.logError("usb-wakeup: helper returned an error for " + deviceId + ": " + stderr);
                 menuItem.setToggleState(!enable);
-                Main.notify("Wybudzanie USB", "Nie udalo sie zmienic ustawienia dla " + deviceId);
+                Main.notify(S.notifyTitle, S.notifySetFail(deviceLabel));
             }
         });
     }

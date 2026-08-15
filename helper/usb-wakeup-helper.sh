@@ -1,6 +1,6 @@
 #!/bin/bash
-# Zapisuje wartosc "enabled"/"disabled" do /sys/bus/usb/devices/<id>/power/wakeup.
-# Uruchamiane przez pkexec z appletu Cinnamon "usb-wakeup". Nie wywolywac recznie.
+# Writes "enabled"/"disabled" to /sys/bus/usb/devices/<id>/power/wakeup.
+# Invoked via pkexec by the "usb-wakeup" Cinnamon applet/CLI. Do not run manually.
 set -euo pipefail
 
 DEVID="${1:-}"
@@ -38,3 +38,27 @@ case "$REAL" in
 esac
 
 echo -n "$ACTION" > "$TARGET"
+
+# Persist the choice by VID:PID so the udev rule can restore it on reboot
+# or reconnection (the sysfs value itself does not survive a reboot).
+VID="$(cat "/sys/bus/usb/devices/$DEVID/idVendor" 2>/dev/null || true)"
+PID="$(cat "/sys/bus/usb/devices/$DEVID/idProduct" 2>/dev/null || true)"
+
+if [[ -n "$VID" && -n "$PID" ]]; then
+    CONFIG_DIR="/etc/usb-wakeup"
+    CONFIG_FILE="$CONFIG_DIR/config"
+    LOCK_FILE="$CONFIG_DIR/.config.lock"
+    KEY="$VID:$PID"
+
+    mkdir -p "$CONFIG_DIR"
+    touch "$CONFIG_FILE"
+
+    (
+        flock -x 200
+        TMP="$(mktemp "$CONFIG_FILE.XXXXXX")"
+        grep -v -F "$KEY=" "$CONFIG_FILE" > "$TMP" 2>/dev/null || true
+        echo "$KEY=$ACTION" >> "$TMP"
+        mv "$TMP" "$CONFIG_FILE"
+        chmod 0644 "$CONFIG_FILE"
+    ) 200>"$LOCK_FILE"
+fi

@@ -1,20 +1,90 @@
 #!/usr/bin/env python3
-"""Listuje urzadzenia USB i pozwala skonfigurowac, ktore z nich moga
-wybudzac komputer z uspienia. Uzycie:
-
-    usb-wakeup                 - otwiera okno GUI
-    usb-wakeup gui             - jw.
-    usb-wakeup list            - wypisuje urzadzenia w terminalu
-    usb-wakeup enable <id>     - wlacza wybudzanie dla urzadzenia (np. 3-1.2.1)
-    usb-wakeup disable <id>    - wylacza wybudzanie dla urzadzenia
-"""
-
+import curses
+import locale
 import os
 import subprocess
 import sys
 
 HELPER_SCRIPT = "/usr/local/bin/usb-wakeup-helper.sh"
 SYSFS_USB_ROOT = "/sys/bus/usb/devices"
+
+STRINGS = {
+    "pl": {
+        "help": (
+            "Listuje urzadzenia USB i pozwala wybrac, ktore z nich moga "
+            "wybudzac komputer z uspienia.\n\n"
+            "Uzycie:\n"
+            "    usb-wakeup                 - interaktywne menu tekstowe (terminal)\n"
+            "    usb-wakeup gui              - okno graficzne\n"
+            "    usb-wakeup list             - wypisuje urzadzenia i konczy dzialanie\n"
+            "    usb-wakeup enable <id>      - wlacza wybudzanie dla urzadzenia (np. 3-1.2.1)\n"
+            "    usb-wakeup disable <id>     - wylacza wybudzanie dla urzadzenia\n"
+        ),
+        "no_devices": "Nie znaleziono urzadzen USB obslugujacych wybudzanie.",
+        "cannot_read": "Nie mozna odczytac {path}: {err}",
+        "state_on": "wlaczone",
+        "state_off": "wylaczone",
+        "set_ok": "Wybudzanie dla {id}: {state}",
+        "set_error": "Blad: {err}",
+        "usage_set": "Uzycie: usb-wakeup {cmd} <device-id>",
+        "unknown_command": "Nieznane polecenie: {cmd}",
+        "menu_header": "Urzadzenia mogace wybudzic komputer",
+        "menu_nav_help": "Strzalki gora/dol - wybor, spacja - zaznacz/odznacz, Enter - zapisz i wyjdz, "
+                          "Esc - wyjdz bez zapisu  (* = niezapisana zmiana)",
+        "menu_save_error": "Nie udalo sie zapisac zmiany dla: {device} ({err})",
+        "gui_title": "USB Wake-up",
+        "gui_refresh": "Odswiez",
+        "gui_close": "Zamknij",
+        "gui_error_title": "Nie udalo sie zmienic ustawienia dla: {device}",
+    },
+    "en": {
+        "help": (
+            "List USB devices and configure which of them can wake the "
+            "computer from sleep.\n\n"
+            "Usage:\n"
+            "    usb-wakeup                 - interactive text menu (terminal)\n"
+            "    usb-wakeup gui              - graphical window\n"
+            "    usb-wakeup list             - print devices and exit\n"
+            "    usb-wakeup enable <id>      - enable wake-up for a device (e.g. 3-1.2.1)\n"
+            "    usb-wakeup disable <id>     - disable wake-up for a device\n"
+        ),
+        "no_devices": "No USB devices supporting wake-up were found.",
+        "cannot_read": "Cannot read {path}: {err}",
+        "state_on": "enabled",
+        "state_off": "disabled",
+        "set_ok": "Wake-up for {id}: {state}",
+        "set_error": "Error: {err}",
+        "usage_set": "Usage: usb-wakeup {cmd} <device-id>",
+        "unknown_command": "Unknown command: {cmd}",
+        "menu_header": "Devices allowed to wake the computer",
+        "menu_nav_help": "Up/down - select, space - toggle, Enter - save and quit, "
+                          "Esc - quit without saving  (* = unsaved change)",
+        "menu_save_error": "Failed to save the change for: {device} ({err})",
+        "gui_title": "USB Wake-up",
+        "gui_refresh": "Refresh",
+        "gui_close": "Close",
+        "gui_error_title": "Could not change the setting for: {device}",
+    },
+}
+
+
+def _detect_lang():
+    for var in ("LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"):
+        value = os.environ.get(var, "")
+        if value.lower().startswith("pl"):
+            return "pl"
+        if value:
+            break
+    try:
+        lang_code = locale.getlocale()[0] or ""
+        if lang_code.lower().startswith("pl"):
+            return "pl"
+    except (ValueError, TypeError):
+        pass
+    return "en"
+
+
+T = STRINGS[_detect_lang()]
 
 
 def read_file(path):
@@ -30,7 +100,7 @@ def list_devices():
     try:
         entries = sorted(os.listdir(SYSFS_USB_ROOT))
     except OSError as e:
-        print(f"Nie mozna odczytac {SYSFS_USB_ROOT}: {e}", file=sys.stderr)
+        print(T["cannot_read"].format(path=SYSFS_USB_ROOT, err=e), file=sys.stderr)
         return devices
 
     for name in entries:
@@ -74,25 +144,103 @@ def set_wakeup(device_id, enable):
 def run_cli_list():
     devices = list_devices()
     if not devices:
-        print("Nie znaleziono urzadzen USB obslugujacych wybudzanie.")
+        print(T["no_devices"])
         return 0
 
-    width = max(len(d["label"]) for d in devices)
+    label_width = max(len(d["label"]) for d in devices)
+    status_width = max(len(T["state_on"]), len(T["state_off"]))
     for d in devices:
-        status = "wlaczone " if d["enabled"] else "wylaczone"
-        print(f"{d['id']:<12} {status}  {d['label']:<{width}}")
+        status = T["state_on"] if d["enabled"] else T["state_off"]
+        print(f"{d['id']:<12} {status:<{status_width}}  {d['label']:<{label_width}}")
     return 0
 
 
 def run_cli_set(device_id, enable):
     ok, err = set_wakeup(device_id, enable)
     if ok:
-        state = "wlaczone" if enable else "wylaczone"
-        print(f"Wybudzanie dla {device_id}: {state}")
+        state = T["state_on"] if enable else T["state_off"]
+        print(T["set_ok"].format(id=device_id, state=state))
         return 0
     else:
-        print(f"Blad: {err}", file=sys.stderr)
+        print(T["set_error"].format(err=err), file=sys.stderr)
         return 1
+
+
+def run_text_menu():
+    errors = curses.wrapper(_text_menu_loop)
+    for err in errors:
+        print(err, file=sys.stderr)
+    return 1 if errors else 0
+
+
+def _text_menu_loop(stdscr):
+    curses.curs_set(0)
+    stdscr.keypad(True)
+    curses.use_default_colors()
+    curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)
+    try:
+        curses.set_escdelay(25)
+    except AttributeError:
+        pass
+
+    devices = list_devices()
+    original = {d["id"]: d["enabled"] for d in devices}
+    labels = {d["id"]: d["label"] for d in devices}
+    pending = dict(original)
+    selected = 0
+
+    while True:
+        if devices:
+            selected = max(0, min(selected, len(devices) - 1))
+
+        stdscr.erase()
+        max_y, max_x = stdscr.getmaxyx()
+
+        def put(y, x, text, attr=curses.A_NORMAL):
+            if 0 <= y < max_y:
+                stdscr.addnstr(y, x, text, max(0, max_x - x - 1), attr)
+
+        put(0, 0, T["menu_header"], curses.A_BOLD)
+
+        row = 2
+        if not devices:
+            put(row, 0, T["no_devices"])
+            row += 1
+        else:
+            for i, d in enumerate(devices):
+                mark = "x" if pending[d["id"]] else " "
+                changed = "*" if pending[d["id"]] != original[d["id"]] else " "
+                line = f"{changed}[{mark}] {d['label']} ({d['id']})"
+                attr = curses.color_pair(1) if i == selected else curses.A_NORMAL
+                put(row + i, 0, line, attr)
+            row += len(devices)
+
+        put(row + 1, 0, T["menu_nav_help"])
+
+        stdscr.refresh()
+
+        key = stdscr.getch()
+
+        if key in (curses.KEY_UP, ord('k')):
+            if devices:
+                selected = (selected - 1) % len(devices)
+        elif key in (curses.KEY_DOWN, ord('j')):
+            if devices:
+                selected = (selected + 1) % len(devices)
+        elif key == ord(' '):
+            if devices:
+                dev_id = devices[selected]["id"]
+                pending[dev_id] = not pending[dev_id]
+        elif key in (curses.KEY_ENTER, 10, 13):
+            errors = []
+            for dev_id, want in pending.items():
+                if want != original[dev_id]:
+                    ok, err = set_wakeup(dev_id, want)
+                    if not ok:
+                        errors.append(T["menu_save_error"].format(device=labels.get(dev_id, dev_id), err=err))
+            return errors
+        elif key == 27:
+            return []
 
 
 def run_gui():
@@ -102,15 +250,16 @@ def run_gui():
 
     class UsbWakeupWindow(Gtk.Window):
         def __init__(self):
-            super().__init__(title="USB Wake-up")
-            self.set_default_size(420, 320)
+            super().__init__(title=T["gui_title"])
+            self.set_default_size(900, 600)
             self.set_border_width(10)
             self.set_icon_name("drive-removable-media")
+            self.set_position(Gtk.WindowPosition.CENTER)
 
             vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
             self.add(vbox)
 
-            header = Gtk.Label(label="Urzadzenia USB - wybudzanie komputera")
+            header = Gtk.Label(label=T["menu_header"])
             header.set_xalign(0)
             vbox.pack_start(header, False, False, 0)
 
@@ -125,11 +274,11 @@ def run_gui():
             button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             vbox.pack_start(button_box, False, False, 0)
 
-            refresh_btn = Gtk.Button(label="Odswiez")
+            refresh_btn = Gtk.Button(label=T["gui_refresh"])
             refresh_btn.connect("clicked", lambda b: self.reload())
             button_box.pack_start(refresh_btn, False, False, 0)
 
-            close_btn = Gtk.Button(label="Zamknij")
+            close_btn = Gtk.Button(label=T["gui_close"])
             close_btn.connect("clicked", lambda b: self.close())
             button_box.pack_end(close_btn, False, False, 0)
 
@@ -144,7 +293,7 @@ def run_gui():
             if not devices:
                 row = Gtk.ListBoxRow()
                 row.set_selectable(False)
-                label = Gtk.Label(label="Nie znaleziono urzadzen USB obslugujacych wybudzanie")
+                label = Gtk.Label(label=T["no_devices"])
                 label.set_xalign(0)
                 label.set_margin_top(6)
                 label.set_margin_bottom(6)
@@ -174,20 +323,22 @@ def run_gui():
             switch = Gtk.Switch()
             switch.set_active(dev["enabled"])
             switch.set_valign(Gtk.Align.CENTER)
-            switch.connect("state-set", self._on_switch_toggled, dev["id"])
+            switch.connect("state-set", self._on_switch_toggled, dev)
             hbox.pack_end(switch, False, False, 0)
 
             return row
 
-        def _on_switch_toggled(self, switch, state, device_id):
+        def _on_switch_toggled(self, switch, state, dev):
             switch.set_sensitive(False)
-            GLib.idle_add(self._do_set_and_reenable, switch, device_id, state)
+            GLib.idle_add(self._do_set_and_reenable, switch, dev, state)
             return True
 
-        def _do_set_and_reenable(self, switch, device_id, state):
-            ok, err = set_wakeup(device_id, state)
+        def _do_set_and_reenable(self, switch, dev, state):
+            ok, err = set_wakeup(dev["id"], state)
             switch.set_sensitive(True)
-            if not ok:
+            if ok:
+                switch.set_state(state)
+            else:
                 switch.set_state(not state)
                 switch.set_active(not state)
                 dialog = Gtk.MessageDialog(
@@ -195,7 +346,7 @@ def run_gui():
                     modal=True,
                     message_type=Gtk.MessageType.ERROR,
                     buttons=Gtk.ButtonsType.OK,
-                    text=f"Nie udalo sie zmienic ustawienia dla {device_id}",
+                    text=T["gui_error_title"].format(device=dev["label"]),
                 )
                 dialog.format_secondary_text(err or "")
                 dialog.run()
@@ -210,7 +361,10 @@ def run_gui():
 
 
 def main(argv):
-    if not argv or argv[0] == "gui":
+    if not argv:
+        return run_text_menu()
+
+    if argv[0] == "gui":
         return run_gui()
 
     if argv[0] == "list":
@@ -218,16 +372,16 @@ def main(argv):
 
     if argv[0] in ("enable", "disable"):
         if len(argv) < 2:
-            print(f"Uzycie: usb-wakeup {argv[0]} <device-id>", file=sys.stderr)
+            print(T["usage_set"].format(cmd=argv[0]), file=sys.stderr)
             return 1
         return run_cli_set(argv[1], argv[0] == "enable")
 
     if argv[0] in ("-h", "--help"):
-        print(__doc__)
+        print(T["help"])
         return 0
 
-    print(f"Nieznane polecenie: {argv[0]}", file=sys.stderr)
-    print(__doc__)
+    print(T["unknown_command"].format(cmd=argv[0]), file=sys.stderr)
+    print(T["help"])
     return 1
 
 

@@ -7,8 +7,10 @@
   <vendor>USB Wake-up Cinnamon Applet</vendor>
 
   <action id="org.cinnamon.applets.usbwakeup.set-wakeup">
-    <description>Zmiana ustawienia wybudzania z USB</description>
-    <message>Aby zmienic, ktore urzadzenia USB moga wybudzac komputer z uspienia, wymagane sa uprawnienia administratora</message>
+    <description>Change USB wake-up setting</description>
+    <description xml:lang="pl">Zmiana ustawienia wybudzania z USB</description>
+    <message>Administrator privileges are required to change which USB devices can wake the computer from sleep</message>
+    <message xml:lang="pl">Aby zmienic, ktore urzadzenia USB moga wybudzac komputer z uspienia, wymagane sa uprawnienia administratora</message>
     <icon_name>drive-removable-media</icon_name>
     <defaults>
       <allow_any>auth_admin</allow_any>
