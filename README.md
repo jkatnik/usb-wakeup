@@ -5,9 +5,17 @@ USB devices and lets you choose which of them are allowed to wake the
 computer from sleep. Includes a standalone CLI/GUI tool for the same task,
 usable from a terminal or the application menu.
 
-| Panel applet | GTK window | Text menu |
-| --- | --- | --- |
-| ![Panel applet menu](docs/screenshots/applet-menu.png) | ![GTK window](docs/screenshots/gui-window.png) | ![Text menu](docs/screenshots/text-menu.png) |
+### Panel applet
+
+![Panel applet menu](docs/screenshots/applet-menu.png)
+
+### GTK window
+
+![GTK window](docs/screenshots/gui-window.png)
+
+### Text menu
+
+![Text menu](docs/screenshots/text-menu.png)
 
 ## Features
 
