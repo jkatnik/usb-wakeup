@@ -20,6 +20,11 @@ usable from a terminal or the application menu.
 ## Features
 
 - Panel applet: click the icon, toggle switches per device.
+- Rename devices: click the pencil icon next to a device (in the panel
+  applet or the GTK window) to give it a friendlier name, edited inline.
+  Custom names are stored in `~/.config/usb-wakeup/labels.json`, keyed by
+  USB vendor:product id, and are shared across the applet, GTK window, text
+  menu, and `usb-wakeup list`.
 - Standalone tool (`usb-wakeup`):
   - no arguments: interactive text menu with arrow-key navigation
     (curses-based)

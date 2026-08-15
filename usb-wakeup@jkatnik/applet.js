@@ -3,10 +3,14 @@ const PopupMenu = imports.ui.popupMenu;
 const Main = imports.ui.main;
 const GLib = imports.gi.GLib;
 const Gio = imports.gi.Gio;
+const St = imports.gi.St;
+const Clutter = imports.gi.Clutter;
+const Tooltips = imports.ui.tooltips;
 const ByteArray = imports.byteArray;
 
 const HELPER_SCRIPT = "/usr/local/bin/usb-wakeup-helper.sh";
 const SYSFS_USB_ROOT = "/sys/bus/usb/devices";
+const LABELS_FILE = GLib.get_user_config_dir() + "/usb-wakeup/labels.json";
 
 const STRINGS = {
     pl: {
@@ -17,6 +21,7 @@ const STRINGS = {
         notifyTitle: "Wybudzanie USB",
         notifyHelperFail: "Nie udalo sie uzyskac uprawnien administratora",
         notifySetFail: label => "Nie udalo sie zmienic ustawienia dla: " + label,
+        rename: "Zmien nazwe (Enter - zapisz, Esc - anuluj)",
     },
     en: {
         tooltip: "USB wake-up",
@@ -26,6 +31,7 @@ const STRINGS = {
         notifyTitle: "USB wake-up",
         notifyHelperFail: "Could not get administrator permission",
         notifySetFail: label => "Could not change the setting for: " + label,
+        rename: "Rename (Enter to save, Esc to cancel)",
     },
 };
 
@@ -97,6 +103,32 @@ class UsbWakeupApplet extends Applet.IconApplet {
         }
     }
 
+    _loadLabelOverrides() {
+        let contents = this._readFile(LABELS_FILE);
+        if (!contents) return {};
+        try {
+            let data = JSON.parse(contents);
+            return (data && typeof data === 'object') ? data : {};
+        } catch (e) {
+            return {};
+        }
+    }
+
+    _saveLabelOverrides(overrides) {
+        GLib.mkdir_with_parents(GLib.path_get_dirname(LABELS_FILE), 0o755);
+        GLib.file_set_contents(LABELS_FILE, JSON.stringify(overrides, null, 2));
+    }
+
+    _setLabelOverride(key, customLabel) {
+        let overrides = this._loadLabelOverrides();
+        if (customLabel) {
+            overrides[key] = customLabel;
+        } else {
+            delete overrides[key];
+        }
+        this._saveLabelOverrides(overrides);
+    }
+
     _listUsbDevices() {
         let devices = [];
         let baseDir = Gio.File.new_for_path(SYSFS_USB_ROOT);
@@ -108,6 +140,8 @@ class UsbWakeupApplet extends Applet.IconApplet {
             global.logError("usb-wakeup: cannot read " + SYSFS_USB_ROOT + ": " + e);
             return devices;
         }
+
+        let overrides = this._loadLabelOverrides();
 
         let info;
         while ((info = enumerator.next_file(null)) !== null) {
@@ -128,14 +162,19 @@ class UsbWakeupApplet extends Applet.IconApplet {
             let vendorId = (this._readFile(devPath + '/idVendor') || '').trim();
             let productId = (this._readFile(devPath + '/idProduct') || '').trim();
 
-            let label = [manufacturer, product].filter(s => s.length > 0).join(' ');
-            if (label.length === 0) {
-                label = "USB " + vendorId + ":" + productId;
+            let defaultLabel = [manufacturer, product].filter(s => s.length > 0).join(' ');
+            if (defaultLabel.length === 0) {
+                defaultLabel = "USB " + vendorId + ":" + productId;
             }
+
+            let key = (vendorId && productId) ? (vendorId + ':' + productId) : ('id:' + name);
+            let label = overrides[key] || defaultLabel;
 
             devices.push({
                 id: name,
-                label: label + " (" + name + ")",
+                key: key,
+                label: label,
+                defaultLabel: defaultLabel,
                 enabled: wakeupState === 'enabled'
             });
         }
@@ -147,6 +186,8 @@ class UsbWakeupApplet extends Applet.IconApplet {
 
     _updateDeviceSection() {
         this.deviceSection.removeAll();
+        this._activeEditItem = null;
+        this._activeEditDev = null;
 
         let devices = this._listUsbDevices();
 
@@ -155,13 +196,114 @@ class UsbWakeupApplet extends Applet.IconApplet {
                 S.noDevices, { reactive: false }));
         } else {
             for (let dev of devices) {
-                let item = new PopupMenu.PopupSwitchMenuItem(dev.label, dev.enabled);
+                let item = new PopupMenu.PopupSwitchMenuItem(
+                    dev.label + " (" + dev.id + ")", dev.enabled);
                 item.connect('toggled', (menuItem, state) => {
                     this._setWakeup(dev.id, dev.label, state, menuItem);
                 });
+
+                let icon = new St.Icon({
+                    style_class: 'popup-menu-icon',
+                    icon_name: 'document-edit-symbolic',
+                    icon_type: St.IconType.SYMBOLIC
+                });
+                let editButton = new St.Button({ child: icon, can_focus: true });
+                new Tooltips.Tooltip(editButton, S.rename);
+                editButton.connect('clicked', () => {
+                    this._toggleInlineEdit(item, dev);
+                });
+                // Inserted before the switch's status bin (which uses span:-1
+                // to fill remaining width), so it gets its own natural-width
+                // column instead of being crowded out by it.
+                item.addActor(editButton, { position: 2 });
+
                 this.deviceSection.addMenuItem(item);
             }
         }
+    }
+
+    _toggleInlineEdit(item, dev) {
+        if (this._activeEditDev === dev.key) {
+            this._closeActiveEdit(false);
+            return;
+        }
+        this._closeActiveEdit(true);
+
+        let entry = new St.Entry({
+            text: dev.label,
+            can_focus: true,
+            x_expand: true
+        });
+
+        let editItem = new PopupMenu.PopupBaseMenuItem({ reactive: false, activate: false });
+        editItem.addActor(entry, { expand: true, span: -1 });
+
+        let items = this.deviceSection.box.get_children();
+        let index = items.indexOf(item.actor);
+        this.deviceSection.addMenuItem(editItem, index + 1);
+
+        let finished = false;
+        let finish = (save) => {
+            if (finished) return;
+            finished = true;
+            this._activeEditItem = null;
+            this._activeEditDev = null;
+            GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                if (save) {
+                    let newLabel = entry.get_text().trim();
+                    if (newLabel && newLabel !== dev.defaultLabel) {
+                        this._setLabelOverride(dev.key, newLabel);
+                    } else {
+                        this._setLabelOverride(dev.key, null);
+                    }
+                }
+                // Move key focus back onto the menu before destroying the
+                // focused entry: if focus briefly becomes null, the popup
+                // menu manager treats that as "focus left the menu" and
+                // closes the whole menu (see PopupMenuManager._onKeyFocusChanged).
+                this.menu.actor.grab_key_focus();
+                editItem.destroy();
+                this._updateDeviceSection();
+                return GLib.SOURCE_REMOVE;
+            });
+        };
+
+        entry.clutter_text.connect('key-press-event', (actor, event) => {
+            let symbol = event.get_key_symbol();
+            if (symbol === Clutter.KEY_Return || symbol === Clutter.KEY_KP_Enter) {
+                finish(true);
+                return Clutter.EVENT_STOP;
+            }
+            if (symbol === Clutter.KEY_Escape) {
+                finish(false);
+                return Clutter.EVENT_STOP;
+            }
+            return Clutter.EVENT_PROPAGATE;
+        });
+        entry.clutter_text.connect('key-focus-out', () => finish(true));
+
+        this._activeEditItem = { editItem: editItem, entry: entry, dev: dev };
+        this._activeEditDev = dev.key;
+
+        entry.grab_key_focus();
+        entry.clutter_text.set_selection(0, -1);
+    }
+
+    _closeActiveEdit(save) {
+        if (!this._activeEditItem) return;
+        let { editItem, entry, dev } = this._activeEditItem;
+        this._activeEditItem = null;
+        this._activeEditDev = null;
+        if (save) {
+            let newLabel = entry.get_text().trim();
+            if (newLabel && newLabel !== dev.defaultLabel) {
+                this._setLabelOverride(dev.key, newLabel);
+            } else {
+                this._setLabelOverride(dev.key, null);
+            }
+        }
+        this.menu.actor.grab_key_focus();
+        editItem.destroy();
     }
 
     _setWakeup(deviceId, deviceLabel, enable, menuItem) {

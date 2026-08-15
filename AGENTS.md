@@ -45,6 +45,20 @@ in one is reflected everywhere else.
   device enumeration/labeling — the curses menu, the GTK window, and the
   CLI (`list`/`enable`/`disable`) all read from it, so a labeling or
   enumeration change there applies everywhere automatically.
+- **Inline rename, not modal.** Both the GTK window and the panel applet
+  rename a device in place (label swaps for a text entry in the same row;
+  Enter/focus-out saves, Esc cancels) rather than opening a dialog — this
+  was an explicit user preference, not a default. `applet.js` and
+  `bin/usb-wakeup` each re-implement this independently (GJS/St vs.
+  Python/GTK) but read/write the same `labels.json`.
+- **Cinnamon popup menu + St.Entry gotcha.** `PopupMenuManager` closes the
+  menu whenever `global.stage.key_focus` moves outside the menu's actor
+  tree (`_onKeyFocusChanged` in `popupMenu.js`). Destroying a focused
+  `St.Entry` (e.g. after committing an inline rename) briefly sets focus to
+  `null`, which reads as "focus left the menu" and closes it. Fix/pattern:
+  call `this.menu.actor.grab_key_focus()` *before* destroying the entry's
+  container, every time. If you add another interactive widget inside a
+  Cinnamon `PopupMenu`, re-check this.
 
 ## Testing changes
 
